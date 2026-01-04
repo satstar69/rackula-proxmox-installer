@@ -2,7 +2,7 @@
 
 # Rackula LXC Installation Script
 # License: MIT
-# Fresh installation only
+# Supports both interactive and non-interactive modes
 
 function header_info() {
   clear
@@ -18,6 +18,18 @@ EOF
 }
 
 set -eEuo pipefail
+
+# Safety checks
+if ! command -v pct &> /dev/null; then
+    echo "ERROR: This script must be run on a Proxmox VE host!"
+    exit 1
+fi
+
+if systemd-detect-virt -c &> /dev/null; then
+    echo "ERROR: This script cannot be run inside a container!"
+    exit 1
+fi
+
 YW="\033[33m"
 BL="\033[36m"
 RD="\033[01;31m"
@@ -69,104 +81,268 @@ get_storage_list() {
   pvesm status -content rootdir | awk 'NR>1 {print $1}'
 }
 
-# Main installation
-header_info
-echo ""
+# Parse command line arguments or environment variables
+INTERACTIVE=true
 
-if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Rackula LXC Installer" --yesno "This will install Rackula in a new LXC container.\n\nProceed?" 10 58; then
-  echo -e "${RD}Installation cancelled${CL}"
-  exit 0
+# Check for non-interactive mode
+if [ "${AUTO:-}" = "yes" ] || [ "${NONINTERACTIVE:-}" = "yes" ]; then
+  INTERACTIVE=false
 fi
 
-# Get Container ID
-SUGGESTED_CTID=$(get_next_ctid)
-CTID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter Container ID" 8 58 "$SUGGESTED_CTID" --title "Container ID" 3>&1 1>&2 2>&3)
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --auto|--yes|-y)
+      INTERACTIVE=false
+      shift
+      ;;
+    --ctid)
+      CTID="$2"
+      shift 2
+      ;;
+    --hostname)
+      HOSTNAME="$2"
+      shift 2
+      ;;
+    --password)
+      PASSWORD="$2"
+      shift 2
+      ;;
+    --storage)
+      STORAGE="$2"
+      shift 2
+      ;;
+    --disk)
+      DISK_SIZE="$2"
+      shift 2
+      ;;
+    --cores)
+      CORES="$2"
+      shift 2
+      ;;
+    --memory)
+      MEMORY="$2"
+      shift 2
+      ;;
+    --swap)
+      SWAP="$2"
+      shift 2
+      ;;
+    --bridge)
+      BRIDGE="$2"
+      shift 2
+      ;;
+    --ip)
+      STATIC_IP="$2"
+      shift 2
+      ;;
+    --gateway)
+      GATEWAY="$2"
+      shift 2
+      ;;
+    --port)
+      HTTP_PORT="$2"
+      shift 2
+      ;;
+    --help)
+      echo "Usage: $0 [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --auto, -y           Non-interactive mode (use defaults)"
+      echo "  --ctid ID            Container ID (default: auto)"
+      echo "  --hostname NAME      Hostname (default: rackula)"
+      echo "  --password PASS      Root password (default: rackula)"
+      echo "  --storage NAME       Storage (default: first available)"
+      echo "  --disk SIZE          Disk size in GB (default: 10)"
+      echo "  --cores N            CPU cores (default: 2)"
+      echo "  --memory MB          RAM in MB (default: 2048)"
+      echo "  --swap MB            Swap in MB (default: 512)"
+      echo "  --bridge NAME        Network bridge (default: vmbr0)"
+      echo "  --ip ADDR            Static IP (e.g., 192.168.1.100/24)"
+      echo "  --gateway ADDR       Gateway for static IP"
+      echo "  --port PORT          HTTP port (default: 8080)"
+      echo ""
+      echo "Examples:"
+      echo "  # Interactive mode:"
+      echo "  $0"
+      echo ""
+      echo "  # Non-interactive with defaults:"
+      echo "  $0 --auto"
+      echo ""
+      echo "  # Custom configuration:"
+      echo "  $0 --auto --hostname myrackula --memory 4096 --port 8090"
+      echo ""
+      echo "  # One-liner from URL:"
+      echo "  bash <(wget -qO- URL) --auto"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Use --help for usage information"
+      exit 1
+      ;;
+  esac
+done
 
-exitstatus=$?
-if [ $exitstatus != 0 ]; then
-  echo -e "${RD}Installation cancelled${CL}"
-  exit 1
-fi
-
-if check_ctid_exists "$CTID"; then
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Container $CTID already exists!" 8 50
-  exit 1
-fi
-
-# Get Hostname
-HOSTNAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter hostname" 8 58 "rackula" --title "Hostname" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Get Password
-PASSWORD=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Enter root password" 8 58 --title "Password" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-PASSWORD_CONFIRM=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Confirm root password" 8 58 --title "Confirm Password" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-if [ "$PASSWORD" != "$PASSWORD_CONFIRM" ]; then
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Passwords don't match!" 8 50
-  exit 1
-fi
-
-# Get Storage
-STORAGE_LIST=()
-while read -r line; do
-  STORAGE_LIST+=("$line" "")
-done < <(get_storage_list)
-
-if [ ${#STORAGE_LIST[@]} -eq 0 ]; then
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "No suitable storage found for containers!" 8 60
-  exit 1
-fi
-
-STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage" --menu "\nSelect storage:" 16 58 6 "${STORAGE_LIST[@]}" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Get Disk Size
-DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter disk size (GB)" 8 58 "10" --title "Disk Size" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Get CPU Cores
-CORES=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter number of CPU cores" 8 58 "2" --title "CPU Cores" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Get Memory
-MEMORY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter RAM (MB)" 8 58 "2048" --title "Memory" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Get Swap
-SWAP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter SWAP (MB)" 8 58 "512" --title "Swap" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Get Bridge
-BRIDGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter network bridge" 8 58 "vmbr0" --title "Network Bridge" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# IP Configuration
-IP_TYPE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Network Configuration" --menu "\nSelect IP configuration:" 12 58 2 \
-  "1" "DHCP" \
-  "2" "Static IP" 3>&1 1>&2 2>&3)
-
-if [ $? -ne 0 ]; then exit 1; fi
-
-if [ "$IP_TYPE" = "2" ]; then
-  STATIC_IP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter static IP (e.g., 192.168.1.100/24)" 8 58 --title "Static IP" 3>&1 1>&2 2>&3)
+# Interactive mode
+if [ "$INTERACTIVE" = true ]; then
+  header_info
+  echo ""
+  
+  if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Rackula LXC Installer" --yesno "This will install Rackula in a new LXC container.\n\nProceed?" 10 58; then
+    echo -e "${RD}Installation cancelled${CL}"
+    exit 0
+  fi
+  
+  # Get Container ID
+  SUGGESTED_CTID=$(get_next_ctid)
+  CTID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter Container ID" 8 58 "$SUGGESTED_CTID" --title "Container ID" 3>&1 1>&2 2>&3)
+  
+  exitstatus=$?
+  if [ $exitstatus != 0 ]; then
+    echo -e "${RD}Installation cancelled${CL}"
+    exit 1
+  fi
+  
+  if check_ctid_exists "$CTID"; then
+    whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Container $CTID already exists!" 8 50
+    exit 1
+  fi
+  
+  # Get Hostname
+  HOSTNAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter hostname" 8 58 "rackula" --title "Hostname" 3>&1 1>&2 2>&3)
   if [ $? -ne 0 ]; then exit 1; fi
   
-  GATEWAY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter gateway" 8 58 --title "Gateway" 3>&1 1>&2 2>&3)
+  # Get Password
+  PASSWORD=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Enter root password" 8 58 --title "Password" 3>&1 1>&2 2>&3)
   if [ $? -ne 0 ]; then exit 1; fi
   
-  NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
+  PASSWORD_CONFIRM=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Confirm root password" 8 58 --title "Confirm Password" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  if [ "$PASSWORD" != "$PASSWORD_CONFIRM" ]; then
+    whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Passwords don't match!" 8 50
+    exit 1
+  fi
+  
+  # Get Storage
+  STORAGE_LIST=()
+  while read -r line; do
+    STORAGE_LIST+=("$line" "")
+  done < <(get_storage_list)
+  
+  if [ ${#STORAGE_LIST[@]} -eq 0 ]; then
+    whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "No suitable storage found for containers!" 8 60
+    exit 1
+  fi
+  
+  STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage" --menu "\nSelect storage:" 16 58 6 "${STORAGE_LIST[@]}" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  # Get Disk Size
+  DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter disk size (GB)" 8 58 "10" --title "Disk Size" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  # Get CPU Cores
+  CORES=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter number of CPU cores" 8 58 "2" --title "CPU Cores" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  # Get Memory
+  MEMORY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter RAM (MB)" 8 58 "2048" --title "Memory" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  # Get Swap
+  SWAP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter SWAP (MB)" 8 58 "512" --title "Swap" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  # Get Bridge
+  BRIDGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter network bridge" 8 58 "vmbr0" --title "Network Bridge" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  # IP Configuration
+  IP_TYPE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Network Configuration" --menu "\nSelect IP configuration:" 12 58 2 \
+    "1" "DHCP" \
+    "2" "Static IP" 3>&1 1>&2 2>&3)
+  
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  if [ "$IP_TYPE" = "2" ]; then
+    STATIC_IP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter static IP (e.g., 192.168.1.100/24)" 8 58 --title "Static IP" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then exit 1; fi
+    
+    GATEWAY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter gateway" 8 58 --title "Gateway" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then exit 1; fi
+    
+    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
+  else
+    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
+  fi
+  
+  # Get HTTP Port
+  HTTP_PORT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter HTTP port for Rackula" 8 58 "8080" --title "HTTP Port" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  ONBOOT_FLAG=1
+  
+  # Confirmation
+  SUMMARY="Container ID: $CTID\nHostname: $HOSTNAME\nStorage: $STORAGE\nDisk: ${DISK_SIZE}GB\nCPU: $CORES cores\nRAM: ${MEMORY}MB\nSwap: ${SWAP}MB\nNetwork: $NET_CONFIG\nHTTP Port: $HTTP_PORT"
+  
+  if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Confirm Installation" --yesno "$SUMMARY\n\nProceed with installation?" 18 70; then
+    echo -e "${RD}Installation cancelled${CL}"
+    exit 1
+  fi
+
 else
-  NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
+  # Non-interactive mode - use defaults or provided values
+  header_info
+  echo -e "\n${GN}Running in non-interactive mode...${CL}\n"
+  
+  CTID="${CTID:-$(get_next_ctid)}"
+  HOSTNAME="${HOSTNAME:-rackula}"
+  PASSWORD="${PASSWORD:-rackula}"
+  DISK_SIZE="${DISK_SIZE:-10}"
+  CORES="${CORES:-2}"
+  MEMORY="${MEMORY:-2048}"
+  SWAP="${SWAP:-512}"
+  BRIDGE="${BRIDGE:-vmbr0}"
+  HTTP_PORT="${HTTP_PORT:-8080}"
+  ONBOOT_FLAG=1
+  
+  # Get first available storage if not specified
+  if [ -z "${STORAGE:-}" ]; then
+    STORAGE=$(get_storage_list | head -1)
+    if [ -z "$STORAGE" ]; then
+      msg_error "No suitable storage found"
+      exit 1
+    fi
+  fi
+  
+  # Check if CTID already exists
+  if check_ctid_exists "$CTID"; then
+    msg_error "Container $CTID already exists"
+    exit 1
+  fi
+  
+  # Network configuration
+  if [ -n "${STATIC_IP:-}" ] && [ -n "${GATEWAY:-}" ]; then
+    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
+  else
+    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
+  fi
+  
+  echo -e "${BL}Container ID:${CL} $CTID"
+  echo -e "${BL}Hostname:${CL} $HOSTNAME"
+  echo -e "${BL}Storage:${CL} $STORAGE"
+  echo -e "${BL}Resources:${CL} ${CORES} cores, ${MEMORY}MB RAM, ${DISK_SIZE}GB disk"
+  echo -e "${BL}Network:${CL} $NET_CONFIG"
+  echo -e "${BL}HTTP Port:${CL} $HTTP_PORT"
+  echo ""
 fi
 
 # Get Template
 TEMPLATE_UBUNTU=$(pveam list local 2>/dev/null | grep -E "ubuntu-(25\.04|24\.04)" | head -1 | awk '{print $1}')
 
 if [ -z "$TEMPLATE_UBUNTU" ]; then
-  header_info
   msg_info "Downloading Ubuntu template"
   
   UBUNTU_TEMPLATE=$(pveam available 2>/dev/null | grep ubuntu-25.04 | grep standard | head -1 | awk '{print $2}')
@@ -187,27 +363,11 @@ else
   TEMPLATE="$TEMPLATE_UBUNTU"
 fi
 
-# Start on boot
-if whiptail --backtitle "Proxmox VE Helper Scripts" --title "Auto-start" --yesno "Start container on boot?" 8 58; then
-  ONBOOT_FLAG=1
-else
-  ONBOOT_FLAG=0
-fi
-
-# Get HTTP Port
-HTTP_PORT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter HTTP port for Rackula" 8 58 "8080" --title "HTTP Port" 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
-
-# Confirmation
-SUMMARY="Container ID: $CTID\nHostname: $HOSTNAME\nStorage: $STORAGE\nDisk: ${DISK_SIZE}GB\nCPU: $CORES cores\nRAM: ${MEMORY}MB\nSwap: ${SWAP}MB\nNetwork: $NET_CONFIG\nHTTP Port: $HTTP_PORT"
-
-if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Confirm Installation" --yesno "$SUMMARY\n\nProceed with installation?" 18 70; then
-  echo -e "${RD}Installation cancelled${CL}"
-  exit 1
-fi
-
 # Create container
-header_info
+if [ "$INTERACTIVE" = false ]; then
+  header_info
+fi
+
 msg_info "Creating LXC container"
 
 pct create "$CTID" "$TEMPLATE" \
@@ -468,6 +628,7 @@ echo -e "${GN}Rackula successfully installed!${CL}\n"
 echo -e "${BL}Container ID:${CL} $CTID"
 echo -e "${BL}Hostname:${CL} $HOSTNAME"
 echo -e "${BL}IP Address:${CL} $CONTAINER_IP"
+echo -e "${BL}Root Password:${CL} $PASSWORD"
 echo -e "\n${YW}Access Rackula at:${CL} ${BGN}http://$CONTAINER_IP:$HTTP_PORT${CL}\n"
 echo -e "${GN}MOTD banner configured - connection info shown on login${CL}\n"
 echo -e "${DGN}Quick Commands (inside container):${CL}"
