@@ -2,7 +2,7 @@
 
 # Rackula LXC Installation Script
 # License: MIT
-# Supports both interactive and non-interactive modes
+# Interactive installation only
 
 function header_info() {
   clear
@@ -81,268 +81,107 @@ get_storage_list() {
   pvesm status -content rootdir | awk 'NR>1 {print $1}'
 }
 
-# Parse command line arguments or environment variables
-INTERACTIVE=true
+# Fixed HTTP Port
+HTTP_PORT=8080
 
-# Check for non-interactive mode
-if [ "${AUTO:-}" = "yes" ] || [ "${NONINTERACTIVE:-}" = "yes" ]; then
-  INTERACTIVE=false
+# Main installation
+header_info
+echo ""
+
+if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Rackula LXC Installer" --yesno "This will install Rackula in a new LXC container.\n\nProceed?" 10 58; then
+  echo -e "${RD}Installation cancelled${CL}"
+  exit 0
 fi
 
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --auto|--yes|-y)
-      INTERACTIVE=false
-      shift
-      ;;
-    --ctid)
-      CTID="$2"
-      shift 2
-      ;;
-    --hostname)
-      HOSTNAME="$2"
-      shift 2
-      ;;
-    --password)
-      PASSWORD="$2"
-      shift 2
-      ;;
-    --storage)
-      STORAGE="$2"
-      shift 2
-      ;;
-    --disk)
-      DISK_SIZE="$2"
-      shift 2
-      ;;
-    --cores)
-      CORES="$2"
-      shift 2
-      ;;
-    --memory)
-      MEMORY="$2"
-      shift 2
-      ;;
-    --swap)
-      SWAP="$2"
-      shift 2
-      ;;
-    --bridge)
-      BRIDGE="$2"
-      shift 2
-      ;;
-    --ip)
-      STATIC_IP="$2"
-      shift 2
-      ;;
-    --gateway)
-      GATEWAY="$2"
-      shift 2
-      ;;
-    --port)
-      HTTP_PORT="$2"
-      shift 2
-      ;;
-    --help)
-      echo "Usage: $0 [OPTIONS]"
-      echo ""
-      echo "Options:"
-      echo "  --auto, -y           Non-interactive mode (use defaults)"
-      echo "  --ctid ID            Container ID (default: auto)"
-      echo "  --hostname NAME      Hostname (default: rackula)"
-      echo "  --password PASS      Root password (default: rackula)"
-      echo "  --storage NAME       Storage (default: first available)"
-      echo "  --disk SIZE          Disk size in GB (default: 10)"
-      echo "  --cores N            CPU cores (default: 2)"
-      echo "  --memory MB          RAM in MB (default: 2048)"
-      echo "  --swap MB            Swap in MB (default: 512)"
-      echo "  --bridge NAME        Network bridge (default: vmbr0)"
-      echo "  --ip ADDR            Static IP (e.g., 192.168.1.100/24)"
-      echo "  --gateway ADDR       Gateway for static IP"
-      echo "  --port PORT          HTTP port (default: 8080)"
-      echo ""
-      echo "Examples:"
-      echo "  # Interactive mode:"
-      echo "  $0"
-      echo ""
-      echo "  # Non-interactive with defaults:"
-      echo "  $0 --auto"
-      echo ""
-      echo "  # Custom configuration:"
-      echo "  $0 --auto --hostname myrackula --memory 4096 --port 8090"
-      echo ""
-      echo "  # One-liner from URL:"
-      echo "  bash <(wget -qO- URL) --auto"
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1"
-      echo "Use --help for usage information"
-      exit 1
-      ;;
-  esac
-done
+# Get Container ID
+SUGGESTED_CTID=$(get_next_ctid)
+CTID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter Container ID" 8 58 "$SUGGESTED_CTID" --title "Container ID" 3>&1 1>&2 2>&3)
 
-# Interactive mode
-if [ "$INTERACTIVE" = true ]; then
-  header_info
-  echo ""
-  
-  if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Rackula LXC Installer" --yesno "This will install Rackula in a new LXC container.\n\nProceed?" 10 58; then
-    echo -e "${RD}Installation cancelled${CL}"
-    exit 0
-  fi
-  
-  # Get Container ID
-  SUGGESTED_CTID=$(get_next_ctid)
-  CTID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter Container ID" 8 58 "$SUGGESTED_CTID" --title "Container ID" 3>&1 1>&2 2>&3)
-  
-  exitstatus=$?
-  if [ $exitstatus != 0 ]; then
-    echo -e "${RD}Installation cancelled${CL}"
-    exit 1
-  fi
-  
-  if check_ctid_exists "$CTID"; then
-    whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Container $CTID already exists!" 8 50
-    exit 1
-  fi
-  
-  # Get Hostname
-  HOSTNAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter hostname" 8 58 "rackula" --title "Hostname" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # Get Password
-  PASSWORD=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Enter root password" 8 58 --title "Password" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  PASSWORD_CONFIRM=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Confirm root password" 8 58 --title "Confirm Password" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  if [ "$PASSWORD" != "$PASSWORD_CONFIRM" ]; then
-    whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Passwords don't match!" 8 50
-    exit 1
-  fi
-  
-  # Get Storage
-  STORAGE_LIST=()
-  while read -r line; do
-    STORAGE_LIST+=("$line" "")
-  done < <(get_storage_list)
-  
-  if [ ${#STORAGE_LIST[@]} -eq 0 ]; then
-    whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "No suitable storage found for containers!" 8 60
-    exit 1
-  fi
-  
-  STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage" --menu "\nSelect storage:" 16 58 6 "${STORAGE_LIST[@]}" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # Get Disk Size
-  DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter disk size (GB)" 8 58 "10" --title "Disk Size" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # Get CPU Cores
-  CORES=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter number of CPU cores" 8 58 "2" --title "CPU Cores" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # Get Memory
-  MEMORY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter RAM (MB)" 8 58 "2048" --title "Memory" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # Get Swap
-  SWAP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter SWAP (MB)" 8 58 "512" --title "Swap" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # Get Bridge
-  BRIDGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter network bridge" 8 58 "vmbr0" --title "Network Bridge" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  # IP Configuration
-  IP_TYPE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Network Configuration" --menu "\nSelect IP configuration:" 12 58 2 \
-    "1" "DHCP" \
-    "2" "Static IP" 3>&1 1>&2 2>&3)
-  
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  if [ "$IP_TYPE" = "2" ]; then
-    STATIC_IP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter static IP (e.g., 192.168.1.100/24)" 8 58 --title "Static IP" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then exit 1; fi
-    
-    GATEWAY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter gateway" 8 58 --title "Gateway" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then exit 1; fi
-    
-    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
-  else
-    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
-  fi
-  
-  # Get HTTP Port
-  HTTP_PORT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter HTTP port for Rackula" 8 58 "8080" --title "HTTP Port" 3>&1 1>&2 2>&3)
-  if [ $? -ne 0 ]; then exit 1; fi
-  
-  ONBOOT_FLAG=1
-  
-  # Confirmation
-  SUMMARY="Container ID: $CTID\nHostname: $HOSTNAME\nStorage: $STORAGE\nDisk: ${DISK_SIZE}GB\nCPU: $CORES cores\nRAM: ${MEMORY}MB\nSwap: ${SWAP}MB\nNetwork: $NET_CONFIG\nHTTP Port: $HTTP_PORT"
-  
-  if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Confirm Installation" --yesno "$SUMMARY\n\nProceed with installation?" 18 70; then
-    echo -e "${RD}Installation cancelled${CL}"
-    exit 1
-  fi
+exitstatus=$?
+if [ $exitstatus != 0 ]; then
+  echo -e "${RD}Installation cancelled${CL}"
+  exit 1
+fi
 
+if check_ctid_exists "$CTID"; then
+  whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Container $CTID already exists!" 8 50
+  exit 1
+fi
+
+# Get Hostname
+HOSTNAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter hostname" 8 58 "rackula" --title "Hostname" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# Get Password
+PASSWORD=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Enter root password" 8 58 --title "Password" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+PASSWORD_CONFIRM=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "Confirm root password" 8 58 --title "Confirm Password" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+if [ "$PASSWORD" != "$PASSWORD_CONFIRM" ]; then
+  whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "Passwords don't match!" 8 50
+  exit 1
+fi
+
+# Get Storage
+STORAGE_LIST=()
+while read -r line; do
+  STORAGE_LIST+=("$line" "")
+done < <(get_storage_list)
+
+if [ ${#STORAGE_LIST[@]} -eq 0 ]; then
+  whiptail --backtitle "Proxmox VE Helper Scripts" --title "Error" --msgbox "No suitable storage found for containers!" 8 60
+  exit 1
+fi
+
+STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage" --menu "\nSelect storage:" 16 58 6 "${STORAGE_LIST[@]}" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# Get Disk Size
+DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter disk size (GB)" 8 58 "10" --title "Disk Size" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# Get CPU Cores
+CORES=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter number of CPU cores" 8 58 "2" --title "CPU Cores" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# Get Memory
+MEMORY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter RAM (MB)" 8 58 "2048" --title "Memory" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# Get Swap
+SWAP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter SWAP (MB)" 8 58 "512" --title "Swap" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# Get Bridge
+BRIDGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter network bridge" 8 58 "vmbr0" --title "Network Bridge" 3>&1 1>&2 2>&3)
+if [ $? -ne 0 ]; then exit 1; fi
+
+# IP Configuration
+IP_TYPE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Network Configuration" --menu "\nSelect IP configuration:" 12 58 2 \
+  "1" "DHCP" \
+  "2" "Static IP" 3>&1 1>&2 2>&3)
+
+if [ $? -ne 0 ]; then exit 1; fi
+
+if [ "$IP_TYPE" = "2" ]; then
+  STATIC_IP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter static IP (e.g., 192.168.1.100/24)" 8 58 --title "Static IP" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  GATEWAY=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter gateway" 8 58 --title "Gateway" 3>&1 1>&2 2>&3)
+  if [ $? -ne 0 ]; then exit 1; fi
+  
+  NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
 else
-  # Non-interactive mode - use defaults or provided values
-  header_info
-  echo -e "\n${GN}Running in non-interactive mode...${CL}\n"
-  
-  CTID="${CTID:-$(get_next_ctid)}"
-  HOSTNAME="${HOSTNAME:-rackula}"
-  PASSWORD="${PASSWORD:-rackula}"
-  DISK_SIZE="${DISK_SIZE:-10}"
-  CORES="${CORES:-2}"
-  MEMORY="${MEMORY:-2048}"
-  SWAP="${SWAP:-512}"
-  BRIDGE="${BRIDGE:-vmbr0}"
-  HTTP_PORT="${HTTP_PORT:-8080}"
-  ONBOOT_FLAG=1
-  
-  # Get first available storage if not specified
-  if [ -z "${STORAGE:-}" ]; then
-    STORAGE=$(get_storage_list | head -1)
-    if [ -z "$STORAGE" ]; then
-      msg_error "No suitable storage found"
-      exit 1
-    fi
-  fi
-  
-  # Check if CTID already exists
-  if check_ctid_exists "$CTID"; then
-    msg_error "Container $CTID already exists"
-    exit 1
-  fi
-  
-  # Network configuration
-  if [ -n "${STATIC_IP:-}" ] && [ -n "${GATEWAY:-}" ]; then
-    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=$STATIC_IP,gw=$GATEWAY"
-  else
-    NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
-  fi
-  
-  echo -e "${BL}Container ID:${CL} $CTID"
-  echo -e "${BL}Hostname:${CL} $HOSTNAME"
-  echo -e "${BL}Storage:${CL} $STORAGE"
-  echo -e "${BL}Resources:${CL} ${CORES} cores, ${MEMORY}MB RAM, ${DISK_SIZE}GB disk"
-  echo -e "${BL}Network:${CL} $NET_CONFIG"
-  echo -e "${BL}HTTP Port:${CL} $HTTP_PORT"
-  echo ""
+  NET_CONFIG="name=eth0,bridge=$BRIDGE,ip=dhcp"
 fi
 
 # Get Template
 TEMPLATE_UBUNTU=$(pveam list local 2>/dev/null | grep -E "ubuntu-(25\.04|24\.04)" | head -1 | awk '{print $1}')
 
 if [ -z "$TEMPLATE_UBUNTU" ]; then
+  header_info
   msg_info "Downloading Ubuntu template"
   
   UBUNTU_TEMPLATE=$(pveam available 2>/dev/null | grep ubuntu-25.04 | grep standard | head -1 | awk '{print $2}')
@@ -363,11 +202,23 @@ else
   TEMPLATE="$TEMPLATE_UBUNTU"
 fi
 
-# Create container
-if [ "$INTERACTIVE" = false ]; then
-  header_info
+# Start on boot
+if whiptail --backtitle "Proxmox VE Helper Scripts" --title "Auto-start" --yesno "Start container on boot?" 8 58; then
+  ONBOOT_FLAG=1
+else
+  ONBOOT_FLAG=0
 fi
 
+# Confirmation
+SUMMARY="Container ID: $CTID\nHostname: $HOSTNAME\nStorage: $STORAGE\nDisk: ${DISK_SIZE}GB\nCPU: $CORES cores\nRAM: ${MEMORY}MB\nSwap: ${SWAP}MB\nNetwork: $NET_CONFIG\nHTTP Port: 8080"
+
+if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "Confirm Installation" --yesno "$SUMMARY\n\nProceed with installation?" 18 70; then
+  echo -e "${RD}Installation cancelled${CL}"
+  exit 1
+fi
+
+# Create container
+header_info
 msg_info "Creating LXC container"
 
 pct create "$CTID" "$TEMPLATE" \
@@ -390,7 +241,7 @@ sleep 5
 msg_ok "Container started"
 
 # Create installation script
-cat >/tmp/rackula-install.sh <<INSTALL_EOF
+cat >/tmp/rackula-install.sh <<'INSTALL_EOF'
 #!/bin/bash
 set -e
 
@@ -398,57 +249,57 @@ YW="\033[33m"
 BL="\033[36m"
 GN="\033[1;92m"
 CL="\033[m"
-CM="\${GN}✓\${CL}"
+CM="${GN}✓${CL}"
 
-echo -e "\n\${GN}Installing Rackula...\${CL}\n"
+echo -e "\n${GN}Installing Rackula...${CL}\n"
 
 # Update system
-echo -ne " - \${YW}Updating system..."
+echo -ne " - ${YW}Updating system..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update >/dev/null 2>&1
 apt-get upgrade -y >/dev/null 2>&1
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Install dependencies
-echo -ne " - \${YW}Installing dependencies..."
+echo -ne " - ${YW}Installing dependencies..."
 apt-get install -y curl wget git ca-certificates gnupg nginx figlet >/dev/null 2>&1
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Install Node.js
-echo -ne " - \${YW}Installing Node.js 20.x..."
+echo -ne " - ${YW}Installing Node.js 20.x..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
 apt-get install -y nodejs >/dev/null 2>&1
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Clone repository
-echo -ne " - \${YW}Cloning Rackula repository..."
+echo -ne " - ${YW}Cloning Rackula repository..."
 cd /opt
 git clone https://github.com/rackulalives/rackula.git >/dev/null 2>&1
 cd rackula
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Install npm dependencies
-echo -ne " - \${YW}Installing npm packages..."
+echo -ne " - ${YW}Installing npm packages..."
 npm install >/dev/null 2>&1
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Build
-echo -ne " - \${YW}Building Rackula..."
+echo -ne " - ${YW}Building Rackula..."
 npm run build >/dev/null 2>&1
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Configure Nginx
-echo -ne " - \${YW}Configuring Nginx..."
+echo -ne " - ${YW}Configuring Nginx..."
 cat > /etc/nginx/sites-available/rackula <<'NGINX_EOF'
 server {
-    listen $HTTP_PORT;
+    listen 8080;
     server_name _;
     
     root /opt/rackula/dist;
     index index.html;
     
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files $uri $uri/ /index.html;
     }
     
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
@@ -471,10 +322,10 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t >/dev/null 2>&1
 systemctl enable nginx >/dev/null 2>&1
 systemctl restart nginx
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Configure MOTD
-echo -ne " - \${YW}Configuring MOTD..."
+echo -ne " - ${YW}Configuring MOTD..."
 chmod -x /etc/update-motd.d/* 2>/dev/null || true
 
 cat > /etc/update-motd.d/00-rackula-header <<'MOTD_EOF'
@@ -485,32 +336,31 @@ CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-HOSTNAME=\$(hostname)
-IP_ADDRESS=\$(hostname -I | awk '{print \$1}')
-HTTP_PORT=$HTTP_PORT
+HOSTNAME=$(hostname)
+IP_ADDRESS=$(hostname -I | awk '{print $1}')
 
 clear
 echo ""
-echo -e "\${GREEN}"
+echo -e "${GREEN}"
 figlet -f standard "Rackula"
-echo -e "\${NC}"
-echo -e "\${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${GREEN}  Container:\${NC} \${HOSTNAME}"
-echo -e "\${GREEN}  IP Address:\${NC} \${IP_ADDRESS}"
-echo -e "\${GREEN}  Web Interface:\${NC} \${YELLOW}http://\${IP_ADDRESS}:\${HTTP_PORT}\${NC}"
-echo -e "\${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+echo -e "${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  Container:${NC} ${HOSTNAME}"
+echo -e "${GREEN}  IP Address:${NC} ${IP_ADDRESS}"
+echo -e "${GREEN}  Web Interface:${NC} ${YELLOW}http://${IP_ADDRESS}:8080${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "\${CYAN}📦 Drag & Drop Rack Visualizer for Homelabbers\${NC}"
+echo -e "${CYAN}📦 Drag & Drop Rack Visualizer for Homelabbers${NC}"
 echo ""
 echo -e "  • Real device images from NetBox library"
 echo -e "  • Export to PNG, PDF, SVG"
 echo -e "  • QR code sharing"
 echo ""
-echo -e "\${YELLOW}Quick Commands:\${NC}"
-echo -e "  \${GREEN}update\${NC}             Update Rackula to latest version"
-echo -e "  \${GREEN}rackula-logs\${NC}       View access logs"
-echo -e "  \${GREEN}rackula-status\${NC}     Check Nginx status"
-echo -e "  \${GREEN}rackula-restart\${NC}    Restart Nginx"
+echo -e "${YELLOW}Quick Commands:${NC}"
+echo -e "  ${GREEN}update${NC}             Update Rackula to latest version"
+echo -e "  ${GREEN}rackula-logs${NC}       View access logs"
+echo -e "  ${GREEN}rackula-status${NC}     Check Nginx status"
+echo -e "  ${GREEN}rackula-restart${NC}    Restart Nginx"
 echo ""
 MOTD_EOF
 
@@ -523,10 +373,10 @@ fi
 PROFILE_EOF
 
 chmod +x /etc/profile.d/rackula-motd.sh
-echo -e " \${CM}"
+echo -e " ${CM}"
 
 # Create update command
-echo -ne " - \${YW}Creating update command..."
+echo -ne " - ${YW}Creating update command..."
 cat > /usr/local/bin/rackula-update <<'UPDATE_CMD'
 #!/bin/bash
 
@@ -536,60 +386,59 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${GREEN}  Rackula Update\${NC}"
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  Rackula Update${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 if [ ! -d "/opt/rackula" ]; then
-    echo -e "\${RED}Error: Rackula not found in /opt/rackula\${NC}"
+    echo -e "${RED}Error: Rackula not found in /opt/rackula${NC}"
     exit 1
 fi
 
 cd /opt/rackula
 
 # Get current commit
-CURRENT_COMMIT=\$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-echo -e "\${YELLOW}Current version:\${NC} \${CURRENT_COMMIT}"
+CURRENT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+echo -e "${YELLOW}Current version:${NC} ${CURRENT_COMMIT}"
 echo ""
 
 # Update repository
 echo -ne "Updating repository... "
 git fetch origin >/dev/null 2>&1
 git pull origin main >/dev/null 2>&1
-NEW_COMMIT=\$(git rev-parse --short HEAD)
-echo -e "\${GREEN}✓\${NC}"
+NEW_COMMIT=$(git rev-parse --short HEAD)
+echo -e "${GREEN}✓${NC}"
 
-if [ "\${CURRENT_COMMIT}" != "\${NEW_COMMIT}" ]; then
-    echo -e "\${GREEN}Updated:\${NC} \${CURRENT_COMMIT} → \${NEW_COMMIT}"
+if [ "${CURRENT_COMMIT}" != "${NEW_COMMIT}" ]; then
+    echo -e "${GREEN}Updated:${NC} ${CURRENT_COMMIT} → ${NEW_COMMIT}"
 else
-    echo -e "\${GREEN}Already up to date\${NC}"
+    echo -e "${GREEN}Already up to date${NC}"
 fi
 
 # Install dependencies
 echo -ne "Installing dependencies... "
 npm install >/dev/null 2>&1
-echo -e "\${GREEN}✓\${NC}"
+echo -e "${GREEN}✓${NC}"
 
 # Build
 echo -ne "Building Rackula... "
 npm run build >/dev/null 2>&1
-echo -e "\${GREEN}✓\${NC}"
+echo -e "${GREEN}✓${NC}"
 
 # Restart Nginx
 echo -ne "Restarting Nginx... "
 systemctl restart nginx
-echo -e "\${GREEN}✓\${NC}"
+echo -e "${GREEN}✓${NC}"
 
 echo ""
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${GREEN}Update complete!\${NC}"
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}Update complete!${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-IP_ADDRESS=\$(hostname -I | awk '{print \$1}')
-HTTP_PORT=$HTTP_PORT
-echo -e "Access Rackula at: \${YELLOW}http://\${IP_ADDRESS}:\${HTTP_PORT}\${NC}"
+IP_ADDRESS=$(hostname -I | awk '{print $1}')
+echo -e "Access Rackula at: ${YELLOW}http://${IP_ADDRESS}:8080${NC}"
 echo ""
 UPDATE_CMD
 
@@ -605,17 +454,17 @@ alias rackula-status='systemctl status nginx'
 alias rackula-restart='systemctl restart nginx'
 ALIAS_EOF
 
-echo -e " \${CM}"
+echo -e " ${CM}"
 
-CONTAINER_IP=\$(hostname -I | awk '{print \$1}')
-echo -e "\n\${GN}Installation complete!\${CL}"
-echo -e "\${BL}Access at: \${YW}http://\${CONTAINER_IP}:$HTTP_PORT\${CL}\n"
+CONTAINER_IP=$(hostname -I | awk '{print $1}')
+echo -e "\n${GN}Installation complete!${CL}"
+echo -e "${BL}Access at: ${YW}http://${CONTAINER_IP}:8080${CL}\n"
 INSTALL_EOF
 
 # Execute installation
 msg_info "Installing Rackula (this may take several minutes)"
 pct push "$CTID" /tmp/rackula-install.sh /root/install.sh
-pct exec "$CTID" -- bash -c "export HTTP_PORT='$HTTP_PORT' && bash /root/install.sh"
+pct exec "$CTID" -- bash /root/install.sh
 rm -f /tmp/rackula-install.sh
 msg_ok "Installation complete"
 
@@ -628,8 +477,7 @@ echo -e "${GN}Rackula successfully installed!${CL}\n"
 echo -e "${BL}Container ID:${CL} $CTID"
 echo -e "${BL}Hostname:${CL} $HOSTNAME"
 echo -e "${BL}IP Address:${CL} $CONTAINER_IP"
-echo -e "${BL}Root Password:${CL} $PASSWORD"
-echo -e "\n${YW}Access Rackula at:${CL} ${BGN}http://$CONTAINER_IP:$HTTP_PORT${CL}\n"
+echo -e "\n${YW}Access Rackula at:${CL} ${BGN}http://$CONTAINER_IP:8080${CL}\n"
 echo -e "${GN}MOTD banner configured - connection info shown on login${CL}\n"
 echo -e "${DGN}Quick Commands (inside container):${CL}"
 echo -e "  ${BL}update${CL}             Update Rackula to latest version"
