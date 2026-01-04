@@ -7,7 +7,7 @@
 function header_info() {
   clear
   cat <<"EOF"
-    ____             __          __     
+    ____             __         __     
    / __ \____ ______/ /____  __/ /___ _
   / /_/ / __ `/ ___/ //_/ / / / / __ `/
  / _, _/ /_/ / /__/ ,< / /_/ / / /_/ / 
@@ -485,3 +485,4 @@ echo -e "  ${BL}rackula-logs${CL}       View access logs"
 echo -e "  ${BL}rackula-status${CL}     Check Nginx status"
 echo -e "  ${BL}rackula-restart${CL}    Restart Nginx"
 echo -e "\n${DGN}Enter container:${CL} ${BL}pct enter $CTID${CL}\n"
+
