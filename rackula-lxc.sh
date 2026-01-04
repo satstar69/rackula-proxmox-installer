@@ -388,4 +388,5 @@ echo -e "\n${YW}Access Rackula at:${CL} ${BGN}http://$CONTAINER_IP:$HTTP_PORT${C
 echo -e "${GN}MOTD banner configured - connection info shown on login${CL}\n"
 echo -e "${DGN}To upgrade Rackula in the future:${CL}"
 echo -e "  ${BL}pct enter $CTID${CL}"
+
 echo -e "  ${BL}cd /opt/rackula && git pull && npm install && npm run build && systemctl restart nginx${CL}\n"
