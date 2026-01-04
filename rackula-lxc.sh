@@ -139,7 +139,7 @@ STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage" --m
 if [ $? -ne 0 ]; then exit 1; fi
 
 # Get Disk Size
-DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter disk size (GB)" 8 58 "10" --title "Disk Size" 3>&1 1>&2 2>&3)
+DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter disk size (GB)" 8 58 "4" --title "Disk Size" 3>&1 1>&2 2>&3)
 if [ $? -ne 0 ]; then exit 1; fi
 
 # Get CPU Cores
@@ -485,4 +485,5 @@ echo -e "  ${BL}rackula-logs${CL}       View access logs"
 echo -e "  ${BL}rackula-status${CL}     Check Nginx status"
 echo -e "  ${BL}rackula-restart${CL}    Restart Nginx"
 echo -e "\n${DGN}Enter container:${CL} ${BL}pct enter $CTID${CL}\n"
+
 
